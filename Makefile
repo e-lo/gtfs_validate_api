@@ -15,21 +15,22 @@ ifneq (,$(wildcard .env))
 endif
 
 # -------------- Variables ----------------------------------------------------
-PROJECT_NUMBER   ?= $(shell gcloud projects describe $(PROJECT) --format='value(projectNumber)') # Fetch dynamically
+PROJECT_NUMBER   ?= $(shell gcloud projects describe $(PROJECT) --format='value(projectNumber)')
 PROJECT          := $(shell gcloud config get-value project)
 REGION           := us-central1
 SERVICE          := gtfs-validator
 REPO             := $(REGION)-docker.pkg.dev/$(PROJECT)/validator
-IMAGE_TAG        := $(REPO)/$(SERVICE):$(SHORT_SHA) # Using SHORT_SHA for specific build
+IMAGE_TAG        := $(REPO)/$(SERVICE):$(SHORT_SHA)
 LATEST_IMAGE_TAG := $(REPO)/$(SERVICE):latest
 SHORT_SHA        := $(shell git rev-parse --short HEAD)
 
 # API Gateway specific variables
 API_ID                 := gtfs-validator-api
-API_CONFIG_ID          := gtfs-config-$(SHORT_SHA) # Version configs with SHA
+API_CONFIG_ID          := gtfs-config-$(SHORT_SHA)
 LATEST_API_CONFIG_ID   := gtfs-config-latest
 GATEWAY_ID             := gtfs-validator-gateway
-GW_SERVICE_ACCOUNT     := $(SERVICE)-gw-invoker # Name for the SA API Gateway will use
+# Name for the SA API Gateway will use
+GW_SERVICE_ACCOUNT     := $(SERVICE)-gw-invoker
 GW_SA_EMAIL            := $(GW_SERVICE_ACCOUNT)@$(PROJECT).iam.gserviceaccount.com
 CLOUD_RUN_SERVICE_URL  := $(shell gcloud run services describe $(SERVICE) --platform managed --region $(REGION) --format='value(status.url)' 2>/dev/null)
 OPENAPI_FILE           := openapi.yaml
@@ -88,7 +89,9 @@ cloud-setup: ## Grant required IAM roles and set up services
 		exit 1; \
 	fi
 	gcloud config set project $(PROJECT)
+	@echo "-----------------------------------------------------------------------"
 	@echo "Enabling required services..."
+	@echo "-----------------------------------------------------------------------"
 	gcloud services enable run.googleapis.com \
 						artifactregistry.googleapis.com \
 						cloudbuild.googleapis.com \
@@ -97,7 +100,11 @@ cloud-setup: ## Grant required IAM roles and set up services
 						servicecontrol.googleapis.com \
 						iam.googleapis.com \
 						apikeys.googleapis.com # Added iam for SA creation
+	@echo "#######################################################################"
+
+	@echo "-----------------------------------------------------------------------"
 	@echo "Checking/Creating Artifact Registry repository..."
+	@echo "-----------------------------------------------------------------------"
 	@if ! gcloud artifacts repositories describe validator --location=$(REGION) --project=$(PROJECT) >/dev/null 2>&1; then \
 		echo "Creating Artifact Registry repository 'validator' in $(REGION)..."; \
 		gcloud artifacts repositories create validator \
@@ -110,24 +117,55 @@ cloud-setup: ## Grant required IAM roles and set up services
 	fi
 	@echo "Configuring Docker to use Artifact Registry..."
 	gcloud auth configure-docker $(REGION)-docker.pkg.dev --project=$(PROJECT)
-	@echo "Checking/Creating Service Account for API Gateway..."
-	@if ! gcloud iam service-accounts describe $(GW_SA_EMAIL) --project=$(PROJECT) >/dev/null 2>&1; then \
-		echo "Creating Service Account $(GW_SERVICE_ACCOUNT)..."; \
-		gcloud iam service-accounts create $(GW_SERVICE_ACCOUNT) \
-			--display-name="API Gateway Invoker for $(SERVICE)" \
-			--project=$(PROJECT); \
+	@echo "Artifact Registry repository 'validator' created and configured successfully."
+	@echo "#######################################################################"
+
+	@echo "-----------------------------------------------------------------------"
+	@echo "Service Account Setup for API Gateway Invoker"
+	@echo "-----------------------------------------------------------------------"
+	@echo "Project ID being used: $(PROJECT)"
+	@echo "Service Account Name: $(GW_SERVICE_ACCOUNT)"
+	@echo "Expected Service Account Email: $(GW_SA_EMAIL)"
+	@echo "Checking if Service Account $(GW_SA_EMAIL) exists in project $(PROJECT)..."
+	@-gcloud iam service-accounts describe "$(GW_SA_EMAIL)" --project="$(PROJECT)" >/dev/null 2>&1; \
+	SA_EXISTS_EC=$$?; \
+	echo "Exit code of describe command: $$SA_EXISTS_EC"; \
+	if [ $$SA_EXISTS_EC -ne 0 ]; then \
+		echo "Service Account $(GW_SA_EMAIL) does not appear to exist (describe failed with exit code $$SA_EXISTS_EC). Attempting to create it..."; \
+		gcloud iam service-accounts create "$(GW_SERVICE_ACCOUNT)" \
+			--display-name="API Gateway Invoker for $(SERVICE) service" \
+			--description="Service account for API Gateway to invoke the $(SERVICE) Cloud Run service" \
+			--project="$(PROJECT)"; \
+		if [ $$? -eq 0 ]; then \
+		    echo "Service Account $(GW_SA_EMAIL) created successfully."; \
+		    echo "Waiting 10 seconds for propagation before IAM binding..."; \
+		    sleep 10; \
+		else \
+		    echo "Service Account creation failed. Please check errors above."; \
+		    exit 1; \
+		fi; \
 	else \
-		echo "Service Account $(GW_SA_EMAIL) already exists."; \
+		echo "Service Account $(GW_SA_EMAIL) already exists (describe succeeded with exit code $$SA_EXISTS_EC)."; \
 	fi
-	@echo "Granting Cloud Run Invoker role to API Gateway Service Account..."
-	gcloud run services add-iam-policy-binding $(SERVICE) \
+	@echo "Service Account setup check complete."
+	@echo "#######################################################################"
+
+	@echo "-----------------------------------------------------------------------"
+	@echo "Granting Cloud Run Invoker role to $(GW_SA_EMAIL) for service $(SERVICE)..."
+	@echo "-----------------------------------------------------------------------"
+	gcloud run services add-iam-policy-binding "$(SERVICE)" \
 		--member="serviceAccount:$(GW_SA_EMAIL)" \
 		--role="roles/run.invoker" \
-		--region=$(REGION) \
+		--region="$(REGION)" \
 		--platform=managed \
-		--project=$(PROJECT) \
+		--project="$(PROJECT)" \
 		--quiet
+	@echo "Cloud Run Invoker role granted."
+	@echo "#######################################################################"
+
+	@echo "-----------------------------------------------------------------------"
 	@echo "Granting roles to Cloud Build service account..."
+	@echo "-----------------------------------------------------------------------"
 	gcloud projects add-iam-policy-binding $(PROJECT) \
 		--member="serviceAccount:$(PROJECT_NUMBER)@cloudbuild.gserviceaccount.com" \
 		--role="roles/run.admin" --condition=None # For deploying to Cloud Run
@@ -137,8 +175,11 @@ cloud-setup: ## Grant required IAM roles and set up services
 	gcloud projects add-iam-policy-binding $(PROJECT) \
 		--member="serviceAccount:$(PROJECT_NUMBER)@cloudbuild.gserviceaccount.com" \
 		--role="roles/artifactregistry.writer" --condition=None
-	@echo "Cloud setup tasks complete."
+	@echo "Cloud Build role granted."
+	@echo "#######################################################################"
 
+	@echo "Cloud setup tasks complete."
+	@echo "#######################################################################"
 
 # -------------- Cloud Build & Run -------------------------------------------
 
@@ -159,7 +200,7 @@ deploy-service: gcloud-build ## Deploy to Cloud Run, tag :latest
 		--region=$(REGION) \
 		--platform=managed \
 		--project=$(PROJECT) \
-		--service-account=$(shell gcloud config get-value account) # Or specific SA for Cloud Run
+		--service-account=$(PROJECT_NUMBER)-compute@developer.gserviceaccount.com
 	@echo "Tagging image $(REPO)/$(SERVICE):$(SHORT_SHA) as $(LATEST_IMAGE_TAG)"
 	gcloud artifacts docker tags add $(REPO)/$(SERVICE):$(SHORT_SHA) $(LATEST_IMAGE_TAG) --project=$(PROJECT) --quiet
 	@echo "Cloud Run service $(SERVICE) deployed. URL: $(shell gcloud run services describe $(SERVICE) --platform managed --region $(REGION) --project=$(PROJECT) --format='value(status.url)')"
@@ -235,24 +276,9 @@ key-create: ## Issue an API key named "gtfs-validator-key" restricted to this AP
 	gcloud services api-keys add-iam-policy-binding $$API_KEY_STRING \
 	    --member="service:$(API_ID).apigateway.$(PROJECT).cloud.goog" \
 	    --role="roles/apigateway.apiKeyUser" \
-	    --project=$(PROJECT) # This restricts usage, but the previous `key-create` was using --api-targets.
-	# The `--api-targets` flag for `gcloud services api-keys create` is simpler if it works for API Gateway APIs.
-	# If using --api-targets during creation:
-	# gcloud services api-keys create --display-name="gtfs-validator-key" \
-	# --project=$(PROJECT) \
-	# --api-targets=service=$(API_ID).apigateway.$(PROJECT).cloud.goog
-	# Let's stick to the more direct approach if `--api-targets` is finicky with the service name format.
-	# The user's original `key-create` command seems more direct:
-	# gcloud services api-keys create --display-name="editor-ui" \
-    #    --project=$(PROJECT) \
-    #    --api-targets=service=$(API_ID).apigateway.PROJECT_ID.cloud.goog # No, this format is wrong
-    # The original `--api-targets=gtfs-validator-api=ALL` implies `gtfs-validator-api` is a registered service name with Service Management.
-    # Let's refine key creation to use the API ID properly. The service name for API Gateway APIs is usually `API_ID.apigateway.PROJECT_ID.cloud.goog` but
-    # `gcloud services api-keys create --api-targets=service=YOUR_SERVICE_NAME` expects the Endpoints service name.
+	    --project=$(PROJECT)
     # For API Gateway, you usually restrict keys by enabling the API Gateway's managed service on the key.
 	@echo "Key 'gtfs-validator-key' created: $$API_KEY_STRING"
-	@echo "To restrict this key to only the '$(API_ID)' API, go to Google Cloud Console -> APIs & Services -> Credentials, select the key, and under 'API restrictions', choose '$(API_ID)'."
-	@echo "Alternatively, ensure your API Gateway managed service (e.g., $(API_ID).apigateway.PROJECT.cloud.goog) is enabled on the key."
 
 key-list: ## Show all API keys
 	gcloud services api-keys list --project=$(PROJECT) --format="table(displayName, keyString, createTime)"
