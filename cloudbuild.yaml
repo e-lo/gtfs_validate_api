@@ -1,0 +1,14 @@
+
+steps:
+  - name: "gcr.io/cloud-builders/docker"
+    args: [ "build", "-t", "$_REPO/$_SERVICE:$_SHORT_SHA", "." ]
+
+  - name: "gcr.io/cloud-builders/docker"
+    args: [ "push", "$_REPO/$_SERVICE:$_SHORT_SHA" ]
+
+  - name: "gcr.io/cloud-builders/docker"
+    args: [ "tag", "$_REPO/$_SERVICE:$_SHORT_SHA", "$_REPO/$_SERVICE:latest" ]
+
+images:
+  - "$_REPO/$_SERVICE:$_SHORT_SHA"
+  - "$_REPO/$_SERVICE:latest"

@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# Environment variables and secrets
+.env
+.env.*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Test and coverage outputs
+.coverage
+htmlcov/
+.tox/
+.pytest_cache/
+
+# Build outputs
+build/
+dist/
+*.egg-info/
+
+# Docker
+*.log
+
+# Editor/IDE
+.vscode/
+.idea/
+*.swp
+
+# Misc
+*.bak
+*.tmp 

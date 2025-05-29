@@ -1,0 +1,22 @@
+[project]
+name = "gtfs-validator-api"
+version = "0.1.0"
+description = "FastAPI wrapper for MobilityData GTFS Validator"
+
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+    "python-multipart",
+    "uv",
+    "aiohttp"
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "ruff",
+    "mypy",
+    "types-requests"
+]
+
+
