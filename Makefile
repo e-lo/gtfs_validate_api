@@ -229,8 +229,7 @@ gateway-setup: fetch-openapi-spec ## Create/Update API, API Config, and Gateway
 		--api=$(API_ID) \
 		--openapi-spec=$(OPENAPI_FILE) \
 		--project=$(PROJECT) \
-		--display-name="Config $(SHORT_SHA)" \
-		--service-account=$(GW_SA_EMAIL)
+		--display-name="Config $(SHORT_SHA)"
 
 	@if ! gcloud api-gateway gateways describe $(GATEWAY_ID) --location=$(REGION) --project=$(PROJECT) >/dev/null 2>&1; then \
 		echo "Creating API Gateway: $(GATEWAY_ID)..."; \

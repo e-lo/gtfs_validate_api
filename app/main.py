@@ -10,7 +10,7 @@ import os
 import aiohttp
 
 JAR = "/opt/gtfs-validator.jar"
-
+GW_SA_EMAIL_FOR_OPENAPI = "gtfs-validator-gw-invoker@gtfs-validator-api.iam.gserviceaccount.com"
 APP_URL = "https://gtfs-validator-67226885558.us-central1.run.app"
 GLOBAL_SECURITY_SCHEME = { 
     "ApiKeyAuth": {
@@ -105,6 +105,10 @@ async def download_file(url: str, dest: str):
         openapi_extra={
             "x-google-backend": {
                 "address": APP_URL,
+                "path_translation": "APPEND_PATH_TO_ADDRESS", # Or your desired strategy
+                "authentication": {
+                    "serviceAccount": GW_SA_EMAIL_FOR_OPENAPI
+                }
             },
             "x-google-quota": {
                 "metricCosts": 1
