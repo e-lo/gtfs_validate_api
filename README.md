@@ -20,41 +20,55 @@ Upload a GTFS `.zip` or provide a URL, receive a validation report in your chose
 
 ---
 
-## Docker Build Configuration
+## Quickstart
 
-You can customize the Java version, GTFS Validator version, and JAR URL when building the Docker image:
-
-```sh
-docker build \
-  --build-arg JAVA_VERSION=17-jre \
-  --build-arg GTFS_VALIDATOR_VERSION=7.1.0 \
-  --build-arg GTFS_VALIDATOR_JAR_URL=https://github.com/MobilityData/gtfs-validator/releases/download/v7.1.0/gtfs-validator-7.1.0-cli.jar \
-  -t your-image-name .
-```
-
-If you use `make docker-build`, you can override these variables like this:
+### 1. Local Development
 
 ```sh
-make docker-build JAVA_VERSION=17-jre GTFS_VALIDATOR_VERSION=7.1.0
+make venv         # create .venv and install dependencies
+make dev          # run FastAPI with hot-reload at http://localhost:8080
 ```
 
----
-
-## Local Development & Testing
-
-You can run the API locally using Docker to match the production environment:
+### 2. Local Docker Usage
 
 ```sh
 make docker-build      # builds the Docker image
 make docker-run        # runs the API at http://localhost:8080 in Docker
 ```
 
-Alternatively, for local development with hot-reload and direct access to the code, you can use a Python virtual environment:
+### 3. Run Tests
 
 ```sh
-make venv         # creates .venv with uv + installs deps
-make dev          # hot-reload API at http://localhost:8000
+make test
 ```
+
+---
+
+## Using a Specific Version of the GTFS Validator
+
+You can build the service with any official release of the MobilityData GTFS Validator by specifying the version and JAR URL at build time.
+
+### Example: Use GTFS Validator v7.1.0
+
+#### With Docker directly
+
+```sh
+docker build \
+  --build-arg JAVA_VERSION=17-jre \
+  --build-arg GTFS_VALIDATOR_VERSION=7.1.0 \
+  --build-arg GTFS_VALIDATOR_JAR_URL=https://github.com/MobilityData/gtfs-validator/releases/download/v7.1.0/gtfs-validator-7.1.0-cli.jar \
+  -t gtfs-validator:7.1.0 .
+```
+
+#### With Makefile
+
+```sh
+make docker-build GTFS_VALIDATOR_VERSION=7.1.0 \
+  GTFS_VALIDATOR_JAR_URL=https://github.com/MobilityData/gtfs-validator/releases/download/v7.1.0/gtfs-validator-7.1.0-cli.jar
+```
+
+You can find the latest releases and their JAR URLs at:
+https://github.com/MobilityData/gtfs-validator/releases
 
 ---
 
@@ -65,6 +79,7 @@ make dev          # hot-reload API at http://localhost:8000
 | `POST` | `/validate` | `multipart/form-data` field **file** (GTFS `.zip`) _or_ **url** (GTFS `.zip` URL) | `format` (optional: `json` (default), `html`, `errors`) | `200 OK` JSON, HTML, or errors-only JSON report. <br>`400` if neither or both file and url are provided.<br>`500` if validator fails. |
 
 ### Parameters
+
 - **file**: (optional) GTFS `.zip` file upload. Use this for local files.
 - **url**: (optional) URL to a GTFS `.zip` file. Use this to validate a remote file.
 - **format**: (optional, query) One of:
@@ -78,57 +93,101 @@ make dev          # hot-reload API at http://localhost:8000
 
 ## Usage Examples
 
-### Validate a local GTFS file (default JSON response)
+### Local (no API key required)
+
+#### Validate a local GTFS file (default JSON response)
+
 ```sh
 curl -X POST \
   -F "file=@feed.zip" \
   http://localhost:8080/validate
 ```
 
-### Validate a local GTFS file and get HTML report
-```sh
-curl -X POST \
-  -F "file=@feed.zip" \
-  "http://localhost:8080/validate?format=html"
-```
+#### Validate a GTFS file from a URL
 
-### Validate a local GTFS file and get errors only
-```sh
-curl -X POST \
-  -F "file=@feed.zip" \
-  "http://localhost:8080/validate?format=errors"
-```
-
-### Validate a GTFS file from a URL (default JSON response)
 ```sh
 curl -X POST \
   -F "url=https://download.mobilitydata.org/gtfs/mdb/gtfs-2245.zip" \
   http://localhost:8080/validate
 ```
 
-### Validate a GTFS file from a URL and get HTML report
+### Cloud (API Gateway, API key required)
+
+#### Validate a local GTFS file (with API key)
+
 ```sh
 curl -X POST \
-  -F "url=https://download.mobilitydata.org/gtfs/mdb/gtfs-2245.zip" \
-  "http://localhost:8080/validate?format=html"
+  -F "file=@feed.zip" \
+  -H "x-api-key: YOUR_API_KEY" \
+  https://YOUR-GATEWAY-URL/validate
 ```
 
-### Validate a GTFS file from a URL and get errors only
+#### Validate a GTFS file from a URL (with API key)
+
 ```sh
 curl -X POST \
   -F "url=https://download.mobilitydata.org/gtfs/mdb/gtfs-2245.zip" \
-  "http://localhost:8080/validate?format=errors"
+  -H "x-api-key: YOUR_API_KEY" \
+  https://YOUR-GATEWAY-URL/validate
+```
+
+---
+
+## Programmatic Usage
+
+### Python Example
+
+```python
+import requests
+
+api_url = "https://YOUR-GATEWAY-URL/validate"
+api_key = "YOUR_API_KEY"
+
+with open("feed.zip", "rb") as f:
+    response = requests.post(
+        api_url,
+        files={"file": ("feed.zip", f, "application/zip")},
+        headers={"x-api-key": api_key}
+    )
+print(response.status_code)
+print(response.json())
+```
+
+### JavaScript Example (Node.js, using axios)
+
+```js
+const axios = require('axios');
+const fs = require('fs');
+const FormData = require('form-data');
+
+const apiUrl = 'https://YOUR-GATEWAY-URL/validate';
+const apiKey = 'YOUR_API_KEY';
+
+const form = new FormData();
+form.append('file', fs.createReadStream('feed.zip'));
+
+axios.post(apiUrl, form, {
+  headers: {
+    ...form.getHeaders(),
+    'x-api-key': apiKey
+  }
+})
+.then(res => {
+  console.log(res.data);
+})
+.catch(err => {
+  console.error(err.response ? err.response.data : err);
+});
 ```
 
 ---
 
 ## OpenAPI Spec
 
-See full schema in `openapi.yaml`.
+See full schema in `openapi.yaml` (auto-generated or fetched from the deployed service).
 
 ---
 
 ## License
 
 MIT License
-
