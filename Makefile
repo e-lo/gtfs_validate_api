@@ -231,15 +231,6 @@ gateway-setup: fetch-openapi-spec ## Create/Update API, API Config, and Gateway
 		--project=$(PROJECT) \
 		--display-name="Config $(SHORT_SHA)" \
 		--service-account=$(GW_SA_EMAIL)
-	# Update LATEST_API_CONFIG_ID to point to this new config, or create a separate 'latest' config
-	# For simplicity here, we'll just create a versioned one.
-	# To update a 'latest' config:
-	# gcloud api-gateway api-configs update $(LATEST_API_CONFIG_ID) \
-	# --api=$(API_ID) \
-	# --openapi-spec=$(OPENAPI_FILE) \
-	# --project=$(PROJECT) \
-	# --display-name="Latest Config" \
-	# --service-account=$(GW_SA_EMAIL)
 
 	@if ! gcloud api-gateway gateways describe $(GATEWAY_ID) --location=$(REGION) --project=$(PROJECT) >/dev/null 2>&1; then \
 		echo "Creating API Gateway: $(GATEWAY_ID)..."; \

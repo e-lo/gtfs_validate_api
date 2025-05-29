@@ -43,4 +43,10 @@ dist/
 
 # Misc
 *.bak
-*.tmp 
+*.tmp
+
+# Ignore test data exhaust
+/tests/dummy.zip
+/tests/dummy.txt
+/tests/*.zip
+/tests/*.txt 

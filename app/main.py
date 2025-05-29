@@ -102,7 +102,6 @@ async def download_file(url: str, dest: str):
                     out.write(chunk)
 
 @app.post("/validate",
-        security=[Security(api_key_header_scheme)],
         openapi_extra={
             "x-google-backend": {
                 "address": APP_URL,
@@ -117,7 +116,8 @@ async def download_file(url: str, dest: str):
 async def validate(
     file: Optional[UploadFile] = File(None),
     url: Optional[str] = Form(None),
-    format: str = Query("json", enum=["json", "html", "errors"], description="Response format: 'json' (default), 'html', or 'errors'")
+    format: str = Query("json", enum=["json", "html", "errors"], description="Response format: 'json' (default), 'html', or 'errors'"),
+    api_key: str = Security(api_key_header_scheme)
 ):
     if isinstance(file, str) and file == "":
         file = None

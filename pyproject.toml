@@ -16,7 +16,9 @@ dev = [
     "pytest",
     "ruff",
     "mypy",
-    "types-requests"
+    "types-requests",
+    "starlette-openapi",
+    "httpx",
 ]
 
 
