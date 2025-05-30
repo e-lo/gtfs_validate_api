@@ -15,25 +15,14 @@ ifneq (,$(wildcard .env))
 endif
 
 # -------------- Variables ----------------------------------------------------
-PROJECT_NUMBER   ?= $(shell gcloud projects describe $(PROJECT) --format='value(projectNumber)')
 PROJECT          := $(shell gcloud config get-value project)
+PROJECT_NUMBER   ?= $(shell gcloud projects describe $(PROJECT) --format='value(projectNumber)')
 REGION           := us-central1
 SERVICE          := gtfs-validator
 REPO             := $(REGION)-docker.pkg.dev/$(PROJECT)/validator
 IMAGE_TAG        := $(REPO)/$(SERVICE):$(SHORT_SHA)
 LATEST_IMAGE_TAG := $(REPO)/$(SERVICE):latest
-SHORT_SHA        := $(shell git rev-parse --short HEAD)
-
-# API Gateway specific variables
-API_ID                 := gtfs-validator-api
-API_CONFIG_ID          := gtfs-config-$(SHORT_SHA)
-LATEST_API_CONFIG_ID   := gtfs-config-latest
-GATEWAY_ID             := gtfs-validator-gateway
-# Name for the SA API Gateway will use
-GW_SERVICE_ACCOUNT     := $(SERVICE)-gw-invoker
-GW_SA_EMAIL            := $(GW_SERVICE_ACCOUNT)@$(PROJECT).iam.gserviceaccount.com
-CLOUD_RUN_SERVICE_URL  := $(shell gcloud run services describe $(SERVICE) --platform managed --region $(REGION) --format='value(status.url)' 2>/dev/null)
-OPENAPI_FILE           := openapi.yaml
+SHORT_SHA        := $(shell git rev-parse --short HEAD 2>/dev/null || echo dev)
 
 # -------------- Helper -------------------------------------------------------
 .PHONY: help check-docker
@@ -50,7 +39,12 @@ check-docker:
 		exit 1 )
 
 # -------------- Development --------------------------------------------------
-venv: ## Create local virtualenv via uv
+dev-setup: ## Install gcloud Firestore emulator for local dev
+	@echo "Installing Firestore emulator..."
+	gcloud components install beta --quiet || true
+	gcloud components install cloud-firestore-emulator --quiet || true
+
+venv: dev-setup ## Create local virtualenv via uv
 	@echo "🔧 Creating local virtualenv (.venv) with uv"
 	@echo "[INFO] For Docker-based workflows, ensure Docker Desktop is installed and running."
 	uv venv .venv
@@ -71,14 +65,28 @@ lint: venv ## Run Ruff and mypy
 docker-build: check-docker ## Build the Docker image locally
 	docker build --platform=linux/amd64 -t $(IMAGE_TAG) .
 
-docker-run: docker-build ## Run the container locally
+docker-run-localprod: docker-build ## Run the container locally in local production mode (no API keys, no DB, no rate limiting)
 	@if lsof -i :8080 >/dev/null 2>&1; then \
 	  echo "[ERROR] Port 8080 is already in use."; \
-	  echo "To find the process using it, run: lsof -i :8080"; \
-	  echo "To kill the process, run: kill <PID> (replace <PID> with the number from the previous command)"; \
 	  exit 1; \
 	fi
-	docker run --rm -p 8080:8080 $(IMAGE_TAG)
+	@echo "Running API container in local production mode (no API keys, no DB, no rate limiting)"
+	docker run --rm --env-file .env -p 8080:8080 $(IMAGE_TAG)
+
+# For local dev/testing: uses .env.development and starts Firestore emulator
+# Make sure .env.development contains FIRESTORE_EMULATOR_HOST=localhost:8081
+
+docker-run-dev: docker-build ## Run the container locally with Firestore emulator and full API logic
+	@if lsof -i :8080 >/dev/null 2>&1; then \
+	  echo "[ERROR] Port 8080 is already in use."; \
+	  exit 1; \
+	fi
+	@echo "Starting Firestore emulator in background..."
+	gcloud beta emulators firestore start --host-port=localhost:8081 &
+	@echo "Waiting for Firestore emulator to start..."
+	sleep 3
+	@echo "Running API container with .env.development (FIRESTORE_EMULATOR_HOST=localhost:8081)"
+	docker run --rm --env-file .env.development -p 8080:8080 $(IMAGE_TAG)
 
 # -------------- Cloud Setup -------------------------------------------------
 cloud-setup: ## Grant required IAM roles and set up services
@@ -99,7 +107,8 @@ cloud-setup: ## Grant required IAM roles and set up services
 						servicemanagement.googleapis.com \
 						servicecontrol.googleapis.com \
 						iam.googleapis.com \
-						apikeys.googleapis.com # Added iam for SA creation
+						apikeys.googleapis.com \
+						firestore.googleapis.com
 	@echo "#######################################################################"
 
 	@echo "-----------------------------------------------------------------------"
@@ -118,49 +127,6 @@ cloud-setup: ## Grant required IAM roles and set up services
 	@echo "Configuring Docker to use Artifact Registry..."
 	gcloud auth configure-docker $(REGION)-docker.pkg.dev --project=$(PROJECT)
 	@echo "Artifact Registry repository 'validator' created and configured successfully."
-	@echo "#######################################################################"
-
-	@echo "-----------------------------------------------------------------------"
-	@echo "Service Account Setup for API Gateway Invoker"
-	@echo "-----------------------------------------------------------------------"
-	@echo "Project ID being used: $(PROJECT)"
-	@echo "Service Account Name: $(GW_SERVICE_ACCOUNT)"
-	@echo "Expected Service Account Email: $(GW_SA_EMAIL)"
-	@echo "Checking if Service Account $(GW_SA_EMAIL) exists in project $(PROJECT)..."
-	@-gcloud iam service-accounts describe "$(GW_SA_EMAIL)" --project="$(PROJECT)" >/dev/null 2>&1; \
-	SA_EXISTS_EC=$$?; \
-	echo "Exit code of describe command: $$SA_EXISTS_EC"; \
-	if [ $$SA_EXISTS_EC -ne 0 ]; then \
-		echo "Service Account $(GW_SA_EMAIL) does not appear to exist (describe failed with exit code $$SA_EXISTS_EC). Attempting to create it..."; \
-		gcloud iam service-accounts create "$(GW_SERVICE_ACCOUNT)" \
-			--display-name="API Gateway Invoker for $(SERVICE) service" \
-			--description="Service account for API Gateway to invoke the $(SERVICE) Cloud Run service" \
-			--project="$(PROJECT)"; \
-		if [ $$? -eq 0 ]; then \
-		    echo "Service Account $(GW_SA_EMAIL) created successfully."; \
-		    echo "Waiting 10 seconds for propagation before IAM binding..."; \
-		    sleep 10; \
-		else \
-		    echo "Service Account creation failed. Please check errors above."; \
-		    exit 1; \
-		fi; \
-	else \
-		echo "Service Account $(GW_SA_EMAIL) already exists (describe succeeded with exit code $$SA_EXISTS_EC)."; \
-	fi
-	@echo "Service Account setup check complete."
-	@echo "#######################################################################"
-
-	@echo "-----------------------------------------------------------------------"
-	@echo "Granting Cloud Run Invoker role to $(GW_SA_EMAIL) for service $(SERVICE)..."
-	@echo "-----------------------------------------------------------------------"
-	gcloud run services add-iam-policy-binding "$(SERVICE)" \
-		--member="serviceAccount:$(GW_SA_EMAIL)" \
-		--role="roles/run.invoker" \
-		--region="$(REGION)" \
-		--platform=managed \
-		--project="$(PROJECT)" \
-		--quiet
-	@echo "Cloud Run Invoker role granted."
 	@echo "#######################################################################"
 
 	@echo "-----------------------------------------------------------------------"
@@ -274,16 +240,37 @@ key-list: ## Show all API keys
 	gcloud services api-keys list --project=$(PROJECT) --format="table(displayName, keyString, createTime)"
 
 # -------------- Full Deployment Orchestration --------------------------------
-release: deploy-service gateway-setup secure-cloud-run ## Deploy service, setup gateway, and secure Cloud Run
+release: deploy-service gateway-setup secure-cloud-run update-cloudrun-secrets
 	@echo "✅ Full release process complete!"
 	@echo "API Gateway URL: https://$(shell gcloud api-gateway gateways describe $(GATEWAY_ID) --location=$(REGION) --project=$(PROJECT) --format='value(defaultHostname)')"
 	@echo "Remember to create and restrict API keys as needed using 'make key-create' or the console."
 
+# --- Google Cloud Secret Manager integration ---
+# Usage:
+#   make secrets-create         # Create or update secret from .env.production
+#   make secrets-update         # Update secret value from .env.production
+#   make update-cloudrun-secrets # Mount secrets as env vars in Cloud Run
 
-# -------------- Clean --------------------------------------------------------
-clean: ## Remove local venv & dangling Docker images
-	@rm -rf .venv
-	-docker image prune -f
+SECRET_NAME ?= $(SERVICE)-env-production
 
-.DEFAULT_GOAL := help
+secrets-create:
+	@echo "Creating or updating secret $(SECRET_NAME) from .env.production..."
+	@if gcloud secrets describe $(SECRET_NAME) --project=$(PROJECT) >/dev/null 2>&1; then \
+		echo "Secret exists, updating..."; \
+		gcloud secrets versions add $(SECRET_NAME) --data-file=.env.production --project=$(PROJECT); \
+	else \
+		echo "Secret does not exist, creating..."; \
+		gcloud secrets create $(SECRET_NAME) --data-file=.env.production --replication-policy=automatic --project=$(PROJECT); \
+	fi
 
+secrets-update: secrets-create
+	@echo "Secret $(SECRET_NAME) updated."
+
+update-cloudrun-secrets:
+	@echo "Mounting secrets as env vars in Cloud Run..."
+	@# Extract variable names from .env.production
+	VARS=$$(grep -v '^#' .env.production | grep '=' | cut -d= -f1 | xargs); \
+	CMD="gcloud run services update $(SERVICE) --region=$(REGION) --platform=managed"; \
+	for VAR in $$VARS; do \
+		CMD="$$CMD --update-secrets $$VAR=$(SECRET_NAME):latest:$$VAR"; \
+	done; \

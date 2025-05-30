@@ -8,7 +8,14 @@ dependencies = [
     "uvicorn[standard]",
     "python-multipart",
     "uv",
-    "aiohttp"
+    "aiohttp",
+    "fastapi-mail",
+    "markdown",
+    "slowapi",
+    "bcrypt",
+    "jinja2",
+    "python-dotenv",
+    "google-cloud-firestore"
 ]
 
 [project.optional-dependencies]

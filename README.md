@@ -44,6 +44,37 @@ make test
 
 ---
 
+## Environment Variables
+
+The application uses the following environment variables for configuration. You can use `.env`, `.env.development`, or `.env.production` files depending on your environment. **Never commit real secrets to version control.**
+
+| Name           | Description                        | Example/Notes                |
+|----------------|------------------------------------|------------------------------|
+| BASE_URL       | Public URL of your app             | https://yourdomain.com       |
+| MAIL_USERNAME  | SMTP/API username                  | Mailjet API key              |
+| MAIL_PASSWORD  | SMTP/API password/secret           | Mailjet secret key           |
+| MAIL_FROM      | Verified sender email              | noreply@yourdomain.com       |
+| MAIL_PORT      | SMTP port                          | 587                          |
+| MAIL_SERVER    | SMTP server host                   | in-v3.mailjet.com            |
+| MAIL_STARTTLS  | Use STARTTLS for SMTP              | True                         |
+| MAIL_SSL_TLS   | Use SSL/TLS for SMTP               | False                        |
+| APP_ENV        | (optional) Set to 'production', 'development', or 'local' to select config | production                   |
+| DISABLE_EMAIL_AND_API_KEY | (optional) If True, bypasses all email and API key checks (for local prod/testing) | True/False |
+
+---
+
+## Environment Summary Table
+
+| Environment         | .env file         | Email/API Key Required? | Notes                        |
+|---------------------|-------------------|------------------------|------------------------------|
+| Local dev/testing   | .env/.env.development | No                     | Dummy or test SMTP           |
+| Local production    | .env              | No (set DISABLE_EMAIL_AND_API_KEY=True) | Bypasses email/API key checks |
+| Cloud production    | .env.production   | Yes                    | Use real secrets             |
+
+> For local production/testing, set `DISABLE_EMAIL_AND_API_KEY=True` in your `.env` to bypass email verification and API key checks.
+
+---
+
 ## Using a Specific Version of the GTFS Validator
 
 You can build the service with any official release of the MobilityData GTFS Validator by specifying the version and JAR URL at build time.
@@ -91,80 +122,78 @@ https://github.com/MobilityData/gtfs-validator/releases
 
 ---
 
-## Usage Examples
+## Usage
 
-### Local (no API key required)
+### Command Line
 
-#### Validate a local GTFS file (default JSON response)
+Validate `gtfsfeed.zip`
+
+```sh
+curl -X POST \
+  -F "file=@gtfsfeed.zip" \
+  https://<YOUR-GATEWAY-URL>/validate
+```
+
+Use your API key in the header to increase your rate limits:
 
 ```sh
 curl -X POST \
   -F "file=@feed.zip" \
-  http://localhost:8080/validate
+  -H "x-api-key: <YOUR_API_KEY>" \
+  https://<YOUR-GATEWAY-URL>/validate
 ```
 
-#### Validate a GTFS file from a URL
+Validate a feed hosted remotely at mobilitydata.org:
 
 ```sh
 curl -X POST \
   -F "url=https://download.mobilitydata.org/gtfs/mdb/gtfs-2245.zip" \
-  http://localhost:8080/validate
+  -H "x-api-key: <YOUR_API_KEY>" \
+  https://<YOUR-GATEWAY-URL>/validate
 ```
 
-### Cloud (API Gateway, API key required)
-
-#### Validate a local GTFS file (with API key)
-
-```sh
-curl -X POST \
-  -F "file=@feed.zip" \
-  -H "x-api-key: YOUR_API_KEY" \
-  https://YOUR-GATEWAY-URL/validate
-```
-
-#### Validate a GTFS file from a URL (with API key)
+Validate a feed and get returned the HTML report:
 
 ```sh
 curl -X POST \
   -F "url=https://download.mobilitydata.org/gtfs/mdb/gtfs-2245.zip" \
-  -H "x-api-key: YOUR_API_KEY" \
-  https://YOUR-GATEWAY-URL/validate
+  -H "x-api-key: <YOUR_API_KEY>" \
+  "https://<YOUR-GATEWAY-URL>/validate?format=html"
 ```
 
----
-
-## Programmatic Usage
-
-### Python Example
+### Python
 
 ```python
 import requests
 
-api_url = "https://YOUR-GATEWAY-URL/validate"
-api_key = "YOUR_API_KEY"
+api_url = "https://<YOUR-GATEWAY-URL>/validate"
+api_key = "<YOUR_API_KEY>"
+gtfs_zipfile = "gtfsfeed.zip"
 
-with open("feed.zip", "rb") as f:
+with open(gtfs_zipfile, "rb") as f:
     response = requests.post(
         api_url,
-        files={"file": ("feed.zip", f, "application/zip")},
+        params={"format": "html"}, # <--- Optional. can be json (default), html or errors (which is also json)
+        files={"file": (gtfs_zipfile, f, "application/zip")}, # use this to validate a local feed
+        # url = "https://download.mobilitydata.org/gtfs/mdb/gtfs-2245.zip", # use this if you want to validate a feed at a URL
         headers={"x-api-key": api_key}
     )
 print(response.status_code)
 print(response.json())
 ```
 
-### JavaScript Example (Node.js, using axios)
+### JavaScript (Node.js, using axios)
 
 ```js
 const axios = require('axios');
 const fs = require('fs');
 const FormData = require('form-data');
 
-const apiUrl = 'https://YOUR-GATEWAY-URL/validate';
-const apiKey = 'YOUR_API_KEY';
+const apiUrl = 'https://<YOUR-GATEWAY-URL>/validate';
+const apiKey = '<YOUR_API_KEY>';
 
 const form = new FormData();
-form.append('file', fs.createReadStream('feed.zip'));
+form.append('file', fs.createReadStream('gtfsfeed.zip'));
 
 axios.post(apiUrl, form, {
   headers: {

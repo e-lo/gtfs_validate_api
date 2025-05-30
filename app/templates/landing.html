@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>GTFS Validator API</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/water.css@2/out/water.css">
+</head>
+<body>
+    <h1>GTFS Validator API</h1>
+    <div>
+        <!-- Rendered README content goes here -->
+        <div>{{ readme_html|safe }}</div>
+    </div>
+    <hr>
+    <h2>Request an API Key</h2>
+    <form method="post" action="/request-key">
+        <label for="email">Email:</label>
+        <input type="email" id="email" name="email" required>
+        <button type="submit">Request API Key</button>
+    </form>
+    <p>Already have a key? Use it in the <code>x-api-key</code> header for higher limits.</p>
+</body>
+</html> 

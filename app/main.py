@@ -1,51 +1,24 @@
-from fastapi import FastAPI, UploadFile, HTTPException, Form, Query, Response, Security, File
-from fastapi.responses import JSONResponse
-from fastapi.security.api_key import APIKeyHeader # For defining API key location
-from fastapi.openapi.utils import get_openapi
+from fastapi import FastAPI, UploadFile, HTTPException, Form, Query, Response, File, Request, Depends, status
+from fastapi.responses import JSONResponse, HTMLResponse, RedirectResponse
+from fastapi.templating import Jinja2Templates
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 from typing import Optional
 import subprocess
 import tempfile
 import json
-import os
 import aiohttp
+import markdown
+from pathlib import Path
+from starlette.background import BackgroundTasks
+import re
+
+from app.rate_limit import limiter, rate_limit_exceeded_handler, get_api_key_from_request
+from app.auth import get_api_key, get_current_user, create_user_with_email, verify_email_token
+from app.database import SessionLocal
+from app.settings import settings
 
 JAR = "/opt/gtfs-validator.jar"
-GW_SA_EMAIL_FOR_OPENAPI = "gtfs-validator-gw-invoker@gtfs-validator-api.iam.gserviceaccount.com"
-APP_URL = "https://gtfs-validator-67226885558.us-central1.run.app"
-GLOBAL_SECURITY_SCHEME = { 
-    "ApiKeyAuth": {
-        "type": "apiKey",
-        "in": "header",
-        "name": "X-API-KEY"
-    }
-}
-X_GOOGLE_MANAGEMENT_METRICS = [{
-    "name": "validation-requests",
-    "displayName": "Validadtion Requests",
-    "valueType": "INT64", # required to be INT64
-    "metricKind": "DELTA" # required to be delta
-}]
-X_GOOGLE_QUOTAS = {
-    "limits": [
-        {
-            "name": "registered-requests-limit",
-            "metric": "validation-requests",
-            "unit": "1/min/{project}", # Or other appropriate unit
-            "values": {"STANDARD": 60} # Example: 60 req/min for API key users
-        },
-        {
-            "name": "unregistered-requests-limit",
-            "metric": "validation-requests",
-            "unit": "1/min/{project}",
-            "values": {"STANDARD": 1} # Example: 10 req/min for public
-        }
-    ]
-}
-
-# Define your API Key security scheme (name can be anything, e.g., X-API-KEY)
-# auto_error=False if you want to handle missing key manually or let API Gateway do it
-api_key_header_scheme = APIKeyHeader(name="X-API-KEY", auto_error=False) 
-
 
 app = FastAPI(
     title="GTFS Validator API",
@@ -54,27 +27,53 @@ app = FastAPI(
     docs_url="/docs",
 )
 
+# Add slowapi middleware and exception handler
+app.state.limiter = limiter
+app.add_exception_handler(429, rate_limit_exceeded_handler)
+
+# Jinja2 templates for landing page
+templates = Jinja2Templates(directory="app/templates")
+
+@app.get("/", response_class=HTMLResponse)
+def landing(request: Request):
+    # Render README.md as HTML
+    readme_path = Path(__file__).parent.parent / "README.md"
+    try:
+        readme_md = readme_path.read_text(encoding="utf-8")
+        readme_html = markdown.markdown(readme_md, extensions=["fenced_code", "tables"])
+    except Exception as e:
+        readme_html = f"<p>Could not load README.md: {e}</p>"
+    return templates.TemplateResponse("landing.html", {"request": request, "readme_html": readme_html})
+
+@app.post("/request-key")
+def request_key(request: Request, background_tasks: BackgroundTasks, email: str = Form(...)):
+    db = SessionLocal()
+    user = create_user_with_email(db, email, background_tasks)
+    db.close()
+    return templates.TemplateResponse("landing.html", {"request": request, "readme_html": "<p>Check your email for a verification link.</p>"})
+
 def run_validator(feed_path: str, work: str) -> None:
     result = subprocess.run(
-        ["java", "-jar", JAR, "-i", feed_path, "-o", work],
+        ["java", "-jar", JAR, "-i", str(feed_path), "-o", str(work)],
         capture_output=True, text=True
     )
     if result.returncode != 0:
         raise HTTPException(500, result.stderr)
 
 def get_report(work: str, format: str):
-    report_json_path = os.path.join(work, "report.json")
-    report_html_path = os.path.join(work, "report.html")
+    work_path = Path(work)
+    report_json_path = work_path / "report.json"
+    report_html_path = work_path / "report.html"
     if format == "json":
-        with open(report_json_path) as f:
+        with report_json_path.open() as f:
             return json.load(f)
     elif format == "html":
-        if not os.path.exists(report_html_path):
+        if not report_html_path.exists():
             raise HTTPException(500, "HTML report not found.")
-        with open(report_html_path) as f:
+        with report_html_path.open() as f:
             return Response(f.read(), media_type="text/html")
     elif format == "errors":
-        with open(report_json_path) as f:
+        with report_json_path.open() as f:
             data = json.load(f)
         errors = [n for n in data.get("notices", []) if n.get("severity") == "ERROR"]
         return JSONResponse({"errors": errors})
@@ -84,45 +83,54 @@ def get_report(work: str, format: str):
 async def save_uploaded_file(file: UploadFile, dest: str):
     if file.content_type != "application/zip":
         raise HTTPException(400, "GTFS feed must be a .zip")
-    with open(dest, "wb") as out:
-        out.write(await file.read())
+    dest_path = Path(dest)
+    dest_path.write_bytes(await file.read())
 
 async def download_file(url: str, dest: str):
     if not url.lower().endswith(".zip"):
         raise HTTPException(400, "A valid GTFS .zip URL must be provided.")
+    dest_path = Path(dest)
     async with aiohttp.ClientSession() as session:
         async with session.get(url) as resp:
             if resp.status != 200:
                 raise HTTPException(400, f"Failed to download file: {resp.status}")
-            with open(dest, "wb") as out:
+            with dest_path.open("wb") as out:
                 while True:
                     chunk = await resp.content.read(1024 * 1024)
                     if not chunk:
                         break
                     out.write(chunk)
 
-@app.post("/validate",
-        openapi_extra={
-            "x-google-backend": {
-                "address": APP_URL,
-                "path_translation": "APPEND_PATH_TO_ADDRESS", # Or your desired strategy
-                "authentication": {
-                    "serviceAccount": GW_SA_EMAIL_FOR_OPENAPI
-                }
-            },
-            "x-google-quota": {
-                "metricCosts": 1
-            },
-            "operationId": "validate_gtfs_feed"
-        },
-       
-)
+@app.post("/validate")
 async def validate(
+    request: Request,
     file: Optional[UploadFile] = File(None),
     url: Optional[str] = Form(None),
     format: str = Query("json", enum=["json", "html", "errors"], description="Response format: 'json' (default), 'html', or 'errors'"),
-    api_key: str = Security(api_key_header_scheme)
+    api_key = Depends(get_api_key)
 ):
+    # Local production: no API key, no DB, no rate limiting
+    if settings.DISABLE_EMAIL_AND_API_KEY:
+        pass  # Allow all requests, no checks
+    else:
+        # Default rate limits
+        default_limit_unauth = "5/day"
+        default_limit_auth = "50/day"
+        # Placeholder: check for per-user/per-key custom limits here
+        # Example: if api_key and api_key.get('custom_limit'): limit = api_key['custom_limit']
+        if api_key:
+            limit = default_limit_auth
+            key_func = lambda req: req.headers.get("x-api-key")
+        else:
+            limit = default_limit_unauth
+            key_func = get_remote_address
+        # Apply rate limit
+        try:
+            limiter.limit(limit, key_func=key_func)(lambda req: None)(request)
+        except RateLimitExceeded as exc:
+            msg = "Rate limit exceeded. Get an API key for higher limits at /"
+            raise HTTPException(status_code=429, detail=msg)
+
     if isinstance(file, str) and file == "":
         file = None
     if not file and not url:
@@ -131,39 +139,40 @@ async def validate(
         raise HTTPException(400, "Provide only one of file or URL, not both.")
 
     with tempfile.TemporaryDirectory() as work:
-        feed = os.path.join(work, "feed.zip")
+        work_path = Path(work)
+        feed = work_path / "feed.zip"
         if file:
-            await save_uploaded_file(file, feed)
+            await save_uploaded_file(file, str(feed))
         else:
-            await download_file(url, feed)
-        run_validator(feed, work)
-        return get_report(work, format)
+            await download_file(url, str(feed))
+        run_validator(feed, work_path)
+        return get_report(work_path, format)
 
-# --- Overriding openapi() method to customize the schema ---
-def custom_openapi():
-    if app.openapi_schema:
-        return app.openapi_schema
-
-    openapi_schema = get_openapi(
-        title=app.title,
-        version=app.version,
-        description=app.description,
-        routes=app.routes,
-    )
-
-    # Ensure components and securitySchemes exist
-    if "components" not in openapi_schema:
-        openapi_schema["components"] = {}
-        openapi_schema["components"]["securitySchemes"] = openapi_schema["components"].get("securitySchemes", {})
-
-    openapi_schema["components"]["securitySchemes"]["ApiKeyAuth"] = GLOBAL_SECURITY_SCHEME
-    
-    openapi_schema["x-google-management"] = {
-        "metrics": X_GOOGLE_MANAGEMENT_METRICS,
-        "quota": X_GOOGLE_QUOTAS
-    }
-
-    app.openapi_schema = openapi_schema
-    return app.openapi_schema
-
-app.openapi = custom_openapi
+@app.get("/verify-email", response_class=HTMLResponse)
+def verify_email(request: Request, token: str):
+    db = SessionLocal()
+    api_key_value = None
+    try:
+        user, api_key = verify_email_token(db, token)
+        api_key_value = api_key.key
+        msg = "<h2>Email verified!</h2>"
+    except Exception as e:
+        msg = f"<h2>Verification failed</h2><p>{e}</p>"
+    finally:
+        db.close()
+    # Extract usage instructions from README
+    readme_path = Path(__file__).parent.parent / "README.md"
+    usage_html = ""
+    try:
+        readme_md = readme_path.read_text(encoding="utf-8")
+        # Extract from ## Programmatic Usage to the next ##
+        usage = re.search(r"## Usage(.+?)(^## |\Z)", readme_md, re.DOTALL | re.MULTILINE)
+        combined = ""
+        if usage:
+            combined += "## Programmatic Usage" + usage.group(1)
+        if combined:
+            import markdown
+            usage_html = markdown.markdown(combined, extensions=["fenced_code", "tables"])
+    except Exception as e:
+        usage_html = f"<p>Could not load usage instructions: {e}</p>"
+    return templates.TemplateResponse("verify_email.html", {"request": request, "message": msg, "api_key": api_key_value, "usage_html": usage_html})

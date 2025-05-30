@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Email Verification - GTFS Validator API</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/water.css@2/out/water.css">
+    <style>
+        .copy-btn {
+            margin-left: 0.5em;
+            cursor: pointer;
+            padding: 0.2em 0.6em;
+            font-size: 1em;
+        }
+        .copied {
+            color: green;
+            margin-left: 0.5em;
+            font-size: 0.95em;
+        }
+        pre { position: relative; }
+        .copy-btn-code {
+            position: absolute;
+            top: 0.5em;
+            right: 0.5em;
+            background: #222;
+            color: #fff;
+            border: none;
+            border-radius: 4px;
+            padding: 0.2em 0.6em;
+            cursor: pointer;
+            font-size: 0.9em;
+        }
+    </style>
+</head>
+<body>
+    <h1>GTFS Validator API</h1>
+    <div>
+        {{ message|safe }}
+        {% if api_key %}
+        <h3>Your API key:</h3>
+        <pre id="api-key-block">{{ api_key }}<button class="copy-btn" onclick="copyApiKey()">Copy</button><span id="copy-confirm"></span></pre>
+        <p>Copy and keep it safe. Use it in the <code>x-api-key</code> header for higher limits.</p>
+        {% endif %}
+        {% if usage_html %}
+        <hr>
+        <h2>How to Use</h2>
+        <div id="usage-instructions">{{ usage_html|safe }}</div>
+        {% endif %}
+    </div>
+    <a href="/">Back to Home</a>
+    <script>
+    function copyApiKey() {
+        const apiKey = document.getElementById('api-key-block').innerText.replace('Copy','').trim();
+        navigator.clipboard.writeText(apiKey);
+        document.getElementById('copy-confirm').innerText = 'Copied!';
+        setTimeout(() => { document.getElementById('copy-confirm').innerText = ''; }, 1500);
+    }
+    // Add copy buttons to all code blocks
+    document.addEventListener('DOMContentLoaded', function() {
+        document.querySelectorAll('pre > code').forEach(function(codeBlock) {
+            const pre = codeBlock.parentElement;
+            const btn = document.createElement('button');
+            btn.innerText = 'Copy';
+            btn.className = 'copy-btn-code';
+            btn.onclick = function() {
+                navigator.clipboard.writeText(codeBlock.innerText);
+                btn.innerText = 'Copied!';
+                setTimeout(() => { btn.innerText = 'Copy'; }, 1200);
+            };
+            pre.style.position = 'relative';
+            pre.appendChild(btn);
+        });
+    });
+    </script>
+</body>
+</html> 
