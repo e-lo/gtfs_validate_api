@@ -1,22 +1,21 @@
-from fastapi import FastAPI, UploadFile, HTTPException, Form, Query, Response, File, Request, Depends, status
-from fastapi.responses import JSONResponse, HTMLResponse, RedirectResponse
+from fastapi import FastAPI, UploadFile, HTTPException, Form, Query, Response, File, Request, Depends
+from fastapi.responses import JSONResponse, HTMLResponse
 from fastapi.templating import Jinja2Templates
 from slowapi.util import get_remote_address
-from slowapi.errors import RateLimitExceeded
 from typing import Optional
 import subprocess
 import tempfile
 import json
 import aiohttp
-import markdown
+import markdown  # type: ignore
 from pathlib import Path
 from starlette.background import BackgroundTasks
 import re
+import logging
 
-from app.rate_limit import limiter, rate_limit_exceeded_handler, get_api_key_from_request
-from app.auth import get_api_key, get_current_user, create_user_with_email, verify_email_token
-from app.database import SessionLocal
-from app.settings import settings
+from app.rate_limit import limiter, rate_limit_exceeded_handler
+from app.auth import get_api_key, create_user_with_email, verify_email_token
+from app.settings import app_settings, rate_limit_settings
 
 JAR = "/opt/gtfs-validator.jar"
 
@@ -29,13 +28,18 @@ app = FastAPI(
 
 # Add slowapi middleware and exception handler
 app.state.limiter = limiter
-app.add_exception_handler(429, rate_limit_exceeded_handler)
+
+app.add_exception_handler(429, rate_limit_exceeded_handler)  # type: ignore[arg-type]
 
 # Jinja2 templates for landing page
 templates = Jinja2Templates(directory="app/templates")
 
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 @app.get("/", response_class=HTMLResponse)
 def landing(request: Request):
+    logger.info(f"Landing page accessed from {request.client.host}")
     # Render README.md as HTML
     readme_path = Path(__file__).parent.parent / "README.md"
     try:
@@ -47,10 +51,14 @@ def landing(request: Request):
 
 @app.post("/request-key")
 def request_key(request: Request, background_tasks: BackgroundTasks, email: str = Form(...)):
-    db = SessionLocal()
-    user = create_user_with_email(db, email, background_tasks)
-    db.close()
-    return templates.TemplateResponse("landing.html", {"request": request, "readme_html": "<p>Check your email for a verification link.</p>"})
+    logger.info(f"API key request for email: {email} from {request.client.host}")
+    try:
+        user = create_user_with_email(email, background_tasks)
+        logger.info(f"User created or found for email: {email}")
+        return templates.TemplateResponse("landing.html", {"request": request, "readme_html": "<p>Check your email for a verification link.</p>"})
+    except Exception as e:
+        logger.error(f"Error processing API key request for {email}: {e}")
+        return templates.TemplateResponse("landing.html", {"request": request, "readme_html": f"<p>Error: {e}</p>"})
 
 def run_validator(feed_path: str, work: str) -> None:
     result = subprocess.run(
@@ -101,65 +109,62 @@ async def download_file(url: str, dest: str):
                         break
                     out.write(chunk)
 
+def get_rate_limit(request: Request, api_key=Depends(get_api_key)):
+    if api_key:
+        return rate_limit_settings.AUTH_LIMIT
+    else:
+        return rate_limit_settings.UNAUTH_LIMIT
+
 @app.post("/validate")
+@limiter.limit("{rate_limit}", key_func=get_remote_address)
 async def validate(
     request: Request,
     file: Optional[UploadFile] = File(None),
     url: Optional[str] = Form(None),
     format: str = Query("json", enum=["json", "html", "errors"], description="Response format: 'json' (default), 'html', or 'errors'"),
-    api_key = Depends(get_api_key)
+    api_key = Depends(get_api_key),
+    rate_limit: str = Depends(get_rate_limit),
 ):
-    # Local production: no API key, no DB, no rate limiting
-    if settings.DISABLE_EMAIL_AND_API_KEY:
-        pass  # Allow all requests, no checks
-    else:
-        # Default rate limits
-        default_limit_unauth = "5/day"
-        default_limit_auth = "50/day"
-        # Placeholder: check for per-user/per-key custom limits here
-        # Example: if api_key and api_key.get('custom_limit'): limit = api_key['custom_limit']
-        if api_key:
-            limit = default_limit_auth
-            key_func = lambda req: req.headers.get("x-api-key")
-        else:
-            limit = default_limit_unauth
-            key_func = get_remote_address
-        # Apply rate limit
-        try:
-            limiter.limit(limit, key_func=key_func)(lambda req: None)(request)
-        except RateLimitExceeded as exc:
-            msg = "Rate limit exceeded. Get an API key for higher limits at /"
-            raise HTTPException(status_code=429, detail=msg)
-
-    if isinstance(file, str) and file == "":
-        file = None
-    if not file and not url:
-        raise HTTPException(400, "You must provide either a file or a URL.")
-    if file and url:
-        raise HTTPException(400, "Provide only one of file or URL, not both.")
-
-    with tempfile.TemporaryDirectory() as work:
-        work_path = Path(work)
-        feed = work_path / "feed.zip"
-        if file:
-            await save_uploaded_file(file, str(feed))
-        else:
-            await download_file(url, str(feed))
-        run_validator(feed, work_path)
-        return get_report(work_path, format)
+    logger.info(f"/validate called from {request.client.host} with api_key={bool(api_key)}")
+    try:
+        if app_settings.DISABLE_EMAIL_AND_API_KEY:
+            logger.info("DISABLE_EMAIL_AND_API_KEY is set; skipping auth and rate limiting.")
+        if isinstance(file, str) and file == "":
+            file = None
+        if not file and not url:
+            logger.warning("No file or URL provided to /validate.")
+            raise HTTPException(400, "You must provide either a file or a URL.")
+        if file and url:
+            logger.warning("Both file and URL provided to /validate.")
+            raise HTTPException(400, "Provide only one of file or URL, not both.")
+        with tempfile.TemporaryDirectory() as work:
+            work_path = Path(work)
+            feed = work_path / "feed.zip"
+            if file:
+                await save_uploaded_file(file, str(feed))
+                logger.info(f"Uploaded file saved for validation: {file.filename}")
+            else:
+                if url is None:
+                    logger.warning("No URL provided when file is None.")
+                    raise HTTPException(400, "You must provide a URL if no file is uploaded.")
+                await download_file(url, str(feed))
+                logger.info(f"Downloaded file from URL: {url}")
+            run_validator(str(feed), str(work_path))
+            logger.info("Validation completed successfully.")
+            return get_report(str(work_path), format)
+    except Exception as e:
+        logger.error(f"Error in /validate: {e}")
+        raise
 
 @app.get("/verify-email", response_class=HTMLResponse)
 def verify_email(request: Request, token: str):
-    db = SessionLocal()
     api_key_value = None
     try:
-        user, api_key = verify_email_token(db, token)
+        user, api_key = verify_email_token(token)
         api_key_value = api_key.key
         msg = "<h2>Email verified!</h2>"
     except Exception as e:
         msg = f"<h2>Verification failed</h2><p>{e}</p>"
-    finally:
-        db.close()
     # Extract usage instructions from README
     readme_path = Path(__file__).parent.parent / "README.md"
     usage_html = ""
@@ -171,7 +176,6 @@ def verify_email(request: Request, token: str):
         if usage:
             combined += "## Programmatic Usage" + usage.group(1)
         if combined:
-            import markdown
             usage_html = markdown.markdown(combined, extensions=["fenced_code", "tables"])
     except Exception as e:
         usage_html = f"<p>Could not load usage instructions: {e}</p>"

@@ -1,5 +1,6 @@
+import os
+os.environ["FIRESTORE_EMULATOR_HOST"] = os.environ.get("FIRESTORE_EMULATOR_HOST", "localhost:8081")
 from google.cloud import firestore
-from google.api_core.exceptions import NotFound
 import bcrypt
 import uuid
 import datetime
@@ -14,8 +15,9 @@ def get_user(email: str):
 
 def create_user(email: str, is_verified: bool = False):
     user_data = {
+        'email': email,  # Store the email address explicitly
         'is_verified': is_verified,
-        'created_at': datetime.datetime.utcnow(),
+        'created_at': datetime.datetime.now(datetime.timezone.utc),
     }
     db.collection('users').document(email.lower()).set(user_data)
     return user_data
@@ -36,7 +38,7 @@ def create_api_key(email: str, api_key: str):
     data = {
         'user_email': email.lower(),
         'key_hash': key_hash,
-        'created_at': datetime.datetime.utcnow(),
+        'created_at': datetime.datetime.now(datetime.timezone.utc),
         'is_active': True,
     }
     db.collection('api_keys').document(key_id).set(data)
@@ -54,10 +56,13 @@ def get_api_key_by_value(api_key: str):
 # --- Verification Token helpers ---
 def create_verification_token(email: str, token: str, expires_at: datetime.datetime):
     token_id = str(uuid.uuid4())
+    # Ensure expires_at is aware
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=datetime.timezone.utc)
     data = {
         'user_email': email.lower(),
         'token': token,
-        'created_at': datetime.datetime.utcnow(),
+        'created_at': datetime.datetime.now(datetime.timezone.utc),
         'expires_at': expires_at,
         'is_used': False,
     }

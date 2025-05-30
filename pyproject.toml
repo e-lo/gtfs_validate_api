@@ -28,4 +28,16 @@ dev = [
     "httpx",
 ]
 
+[tool.mypy]
+python_version = "3.12"
+ignore_missing_imports = false
+
+[[tool.mypy.overrides]]
+module = "google.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "markdown"
+ignore_missing_imports = true
+
 

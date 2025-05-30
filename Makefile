@@ -19,10 +19,13 @@ PROJECT          := $(shell gcloud config get-value project)
 PROJECT_NUMBER   ?= $(shell gcloud projects describe $(PROJECT) --format='value(projectNumber)')
 REGION           := us-central1
 SERVICE          := gtfs-validator
+SHORT_SHA        := $(shell git rev-parse --short HEAD 2>/dev/null || echo dev)
 REPO             := $(REGION)-docker.pkg.dev/$(PROJECT)/validator
 IMAGE_TAG        := $(REPO)/$(SERVICE):$(SHORT_SHA)
 LATEST_IMAGE_TAG := $(REPO)/$(SERVICE):latest
-SHORT_SHA        := $(shell git rev-parse --short HEAD 2>/dev/null || echo dev)
+# Set your Firestore emulator project ID here
+FIRESTORE_PROJECT_ID 	:= firestore-emulator-example
+FIRESTORE_EMULATOR_PORT := 8080
 
 # -------------- Helper -------------------------------------------------------
 .PHONY: help check-docker
@@ -59,7 +62,7 @@ test: venv ## Run unit tests
 	. .venv/bin/activate && pytest -q
 
 lint: venv ## Run Ruff and mypy
-	. .venv/bin/activate && ruff check app && mypy app
+	. .venv/bin/activate && ruff check --fix-only app && mypy app
 
 # -------------- Container build ---------------------------------------------
 docker-build: check-docker ## Build the Docker image locally
@@ -67,8 +70,13 @@ docker-build: check-docker ## Build the Docker image locally
 
 docker-run-localprod: docker-build ## Run the container locally in local production mode (no API keys, no DB, no rate limiting)
 	@if lsof -i :8080 >/dev/null 2>&1; then \
-	  echo "[ERROR] Port 8080 is already in use."; \
-	  exit 1; \
+	  PID=$$(lsof -ti :8080); \
+	  echo "[ERROR] Port 8080 is already in use by process $$PID."; \
+	  read -p "Do you want to kill it and proceed? [y/N] " yn; \
+	  case $$yn in \
+	    [Yy]*) kill -9 $$PID; echo "Killed process $$PID.";; \
+	    *) echo "Aborting."; exit 1;; \
+	  esac; \
 	fi
 	@echo "Running API container in local production mode (no API keys, no DB, no rate limiting)"
 	docker run --rm --env-file .env -p 8080:8080 $(IMAGE_TAG)
@@ -78,14 +86,19 @@ docker-run-localprod: docker-build ## Run the container locally in local product
 
 docker-run-dev: docker-build ## Run the container locally with Firestore emulator and full API logic
 	@if lsof -i :8080 >/dev/null 2>&1; then \
-	  echo "[ERROR] Port 8080 is already in use."; \
-	  exit 1; \
+	  PID=$$(lsof -ti :8080); \
+	  echo "[ERROR] Port 8080 is already in use by process $$PID."; \
+	  read -p "Do you want to kill it and proceed? [y/N] " yn; \
+	  case $$yn in \
+	    [Yy]*) kill -9 $$PID; echo "Killed process $$PID.";; \
+	    *) echo "Aborting."; exit 1;; \
+	  esac; \
 	fi
 	@echo "Starting Firestore emulator in background..."
-	gcloud beta emulators firestore start --host-port=localhost:8081 &
+	gcloud beta emulators firestore start --host-port=127.0.0.1:8081 &
 	@echo "Waiting for Firestore emulator to start..."
 	sleep 3
-	@echo "Running API container with .env.development (FIRESTORE_EMULATOR_HOST=localhost:8081)"
+	@echo "Running API container with .env.development (FIRESTORE_EMULATOR_HOST=--host-port=127.0.0.1:8081)"
 	docker run --rm --env-file .env.development -p 8080:8080 $(IMAGE_TAG)
 
 # -------------- Cloud Setup -------------------------------------------------
@@ -181,39 +194,6 @@ fetch-openapi-spec: ## Fetch openapi.json from deployed Cloud Run service and sa
 		(echo "[ERROR] Failed to fetch openapi.json. Check if the service is running and /openapi.json is accessible." && exit 1)
 	@echo "OpenAPI spec saved to $(OPENAPI_FILE)"
 
-# -------------- API Gateway & keys ------------------------------------------
-gateway-setup: fetch-openapi-spec ## Create/Update API, API Config, and Gateway
-	@echo "Setting up API Gateway..."
-	@if ! gcloud api-gateway apis describe $(API_ID) --project=$(PROJECT) >/dev/null 2>&1; then \
-		echo "Creating API Gateway API: $(API_ID)..."; \
-		gcloud api-gateway apis create $(API_ID) --project=$(PROJECT); \
-	else \
-		echo "API Gateway API '$(API_ID)' already exists."; \
-	fi
-	@echo "Creating/Updating API Config: $(API_CONFIG_ID) for API $(API_ID)..."
-	gcloud api-gateway api-configs create $(API_CONFIG_ID) \
-		--api=$(API_ID) \
-		--openapi-spec=$(OPENAPI_FILE) \
-		--project=$(PROJECT) \
-		--display-name="Config $(SHORT_SHA)"
-
-	@if ! gcloud api-gateway gateways describe $(GATEWAY_ID) --location=$(REGION) --project=$(PROJECT) >/dev/null 2>&1; then \
-		echo "Creating API Gateway: $(GATEWAY_ID)..."; \
-		gcloud api-gateway gateways create $(GATEWAY_ID) \
-			--api=$(API_ID) \
-			--api-config=$(API_CONFIG_ID) \
-			--location=$(REGION) \
-			--project=$(PROJECT); \
-	else \
-		echo "Updating API Gateway $(GATEWAY_ID) to use config $(API_CONFIG_ID)..."; \
-		gcloud api-gateway gateways update $(GATEWAY_ID) \
-			--api=$(API_ID) \
-			--api-config=$(API_CONFIG_ID) \
-			--location=$(REGION) \
-			--project=$(PROJECT); \
-	fi
-	@echo "API Gateway URL: https://$(shell gcloud api-gateway gateways describe $(GATEWAY_ID) --location=$(REGION) --project=$(PROJECT) --format='value(defaultHostname)')"
-
 secure-cloud-run: ## Restrict Cloud Run ingress to internal and API Gateway traffic
 	@echo "Securing Cloud Run service $(SERVICE) by restricting ingress..."
 	gcloud run services update $(SERVICE) \
@@ -274,3 +254,14 @@ update-cloudrun-secrets:
 	for VAR in $$VARS; do \
 		CMD="$$CMD --update-secrets $$VAR=$(SECRET_NAME):latest:$$VAR"; \
 	done; \
+
+.PHONY: start-firestore-emulator
+start-firestore-emulator:
+	@echo "Starting Firestore emulator on port $(FIRESTORE_EMULATOR_PORT)..."
+	@gcloud beta emulators firestore start --host-port=127.0.0.1:$(FIRESTORE_EMULATOR_PORT) > /dev/null 2>&1 & \
+	sleep 3
+
+.PHONY: clear-firestore
+clear-firestore: start-firestore-emulator
+	@echo "Clearing Firestore emulator data..."
+	@curl -s -X DELETE "http://localhost:$(FIRESTORE_EMULATOR_PORT)/emulator/v1/projects/$(FIRESTORE_PROJECT_ID)/databases/(default)/documents" && echo "Firestore emulator cleared."

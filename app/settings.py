@@ -1,23 +1,28 @@
-import os
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings
+from typing import Literal, Annotated
+from pydantic import SecretStr, StringConstraints
 
-env = os.getenv("APP_ENV", "local")
-env_file = {
-    "local": ".env",
-    "development": ".env.development",
-    "production": ".env.production"
-}.get(env, ".env")
+r_rate_limit = r"^\d+/(second|minute|hour|day|week|month)$"
 
-class Settings(BaseSettings):
+class AppSettings(BaseSettings):
     BASE_URL: str = "http://localhost:8080"
     DISABLE_EMAIL_AND_API_KEY: bool = False
-    MAIL_USERNAME: str
-    MAIL_PASSWORD: str
-    MAIL_FROM: str
-    MAIL_PORT: int = 587
-    MAIL_SERVER: str = "smtp.gmail.com"
-    MAIL_STARTTLS: bool = True
-    MAIL_SSL_TLS: bool = False
-    model_config = SettingsConfigDict(env_file=env_file, env_file_encoding="utf-8")
+    APP_ENV: Literal["local", "development", "production", "default"] = "default"
 
-settings = Settings() 
+class MailSettings(BaseSettings):
+    MAIL_USERNAME: str
+    MAIL_PASSWORD: SecretStr
+    MAIL_FROM: str
+    MAIL_PORT: int
+    MAIL_SERVER: str
+    MAIL_STARTTLS: bool
+    MAIL_SSL_TLS: bool
+
+class RateLimitSettings(BaseSettings):
+    UNAUTH_LIMIT: Annotated[str, StringConstraints(pattern=r_rate_limit)] = "5/day"
+    AUTH_LIMIT: Annotated[str, StringConstraints(pattern=r_rate_limit)] = "50/day"
+
+
+app_settings = AppSettings()
+mail_settings = MailSettings() if not app_settings.DISABLE_EMAIL_AND_API_KEY else None
+rate_limit_settings = RateLimitSettings() if not app_settings.DISABLE_EMAIL_AND_API_KEY else None
