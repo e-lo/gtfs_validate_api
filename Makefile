@@ -55,13 +55,13 @@ dev-env: venv
 	gcloud components install beta --quiet || true
 	gcloud components install cloud-firestore-emulator --quiet || true
 
-cloud-env: venv 
-	uv pip install ".[cloud]"
 
-test: venv ## Run unit tests
+# -------------- Development Functions --------------------------------------------------
+
+test: dev-env ## Run unit tests
 	. .venv/bin/activate && pytest -q
 
-lint: venv ## Run Ruff and mypy, and fix Markdown files if possible
+lint: dev-env ## Run Ruff and mypy, and fix Markdown files if possible
 	. .venv/bin/activate && ruff check --fix-only app && mypy app
 	. .venv/bin/activate && ruff format
 	@command -v markdownlint >/dev/null 2>&1 && markdownlint --fix '**/*.md' || npx --no-install markdownlint --fix '**/*.md' || echo "markdownlint not found. Skipping markdown lint."
@@ -70,6 +70,17 @@ lint: venv ## Run Ruff and mypy, and fix Markdown files if possible
 docker-build: check-docker ## Build the Docker image locally
 	docker build --platform=linux/amd64 -t $(IMAGE_TAG) .
 
+# ----- Commands used by docker container to start app
+
+run-dev: ## Run the API
+	@echo "🚀 Starting FastAPI with hot-reload"
+	. .venv/bin/activate && uvicorn app.main:app --reload --host 0.0.0.0 --port 8080
+
+run-prod:
+	. .venv/bin/activate && uvicorn app.main:app --host 0.0.0.0 --port 8080
+
+
+# -------------- Local Running  ---------------------------------------------
 docker-run-local: docker-build ## Run the container locally in local production mode (no API keys, no DB, no rate limiting)
 	@if lsof -i :8080 >/dev/null 2>&1; then \
 	  PID=$$(lsof -ti :8080); \
@@ -103,15 +114,8 @@ docker-run-dev: docker-build ## Run the container locally with Firestore emulato
 	@echo "Running API container with .env.development (FIRESTORE_EMULATOR_HOST=--host-port=127.0.0.1:8081)"
 	docker run --rm --env-file .env.development -p 8080:8080 $(IMAGE_TAG)
 
-run-dev: ## Run the API
-	@echo "🚀 Starting FastAPI with hot-reload"
-	. .venv/bin/activate && uvicorn app.main:app --reload --host 0.0.0.0 --port 8080
-
-run-prod:
-	. .venv/bin/activate && uvicorn app.main:app --host 0.0.0.0 --port 8080
-
 # -------------- Cloud Setup -------------------------------------------------
-init-cloud-setup: ## Grant required IAM roles and set up services
+gcloud-setup: ## Grant required IAM roles and set up services
 	gcloud auth login
 	@echo "Verifying/Setting project to $(PROJECT)..."
 	@if ! gcloud projects describe $(PROJECT) >/dev/null 2>&1; then \
@@ -179,7 +183,7 @@ gcloud-build: cloudbuild.yaml ## Build & push image with Cloud Build → Artifac
 		--substitutions _REPO=$(REPO),_SERVICE=$(SERVICE),_SHORT_SHA=$(SHORT_SHA)
 		--build-arg APP_ENV=production
 
-deploy-service: update-cloudrun-secrets gcloud-build ## Deploy to Cloud Run, tag :latest
+gcloud-deploy: update-cloudrun-secrets gcloud-build ## Deploy to Cloud Run, tag :latest
 	@echo "Deploying $(SERVICE) to Cloud Run from image $(REPO)/$(SERVICE):$(SHORT_SHA)"
 	gcloud run deploy $(SERVICE) \
 		--image=$(REPO)/$(SERVICE):$(SHORT_SHA) \
@@ -193,11 +197,6 @@ deploy-service: update-cloudrun-secrets gcloud-build ## Deploy to Cloud Run, tag
 	@echo "Tagging image $(REPO)/$(SERVICE):$(SHORT_SHA) as $(LATEST_IMAGE_TAG)"
 	gcloud artifacts docker tags add $(REPO)/$(SERVICE):$(SHORT_SHA) $(LATEST_IMAGE_TAG) --project=$(PROJECT) --quiet
 	@echo "Cloud Run service $(SERVICE) deployed. URL: $(shell gcloud run services describe $(SERVICE) --platform managed --region $(REGION) --project=$(PROJECT) --format='value(status.url)')"
-
-
-# -------------- Full Deployment Orchestration --------------------------------
-release: deploy-service
-	@echo "✅ Full release process complete!"
 
 # --- Google Cloud Secret Manager integration ---
 # Usage:

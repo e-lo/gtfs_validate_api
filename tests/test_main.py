@@ -14,7 +14,8 @@ import subprocess
 import time
 import pytest
 from fastapi.testclient import TestClient
-from app.main import app
+from app.main import app, get_md_intro, get_md_section
+import re
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -84,3 +85,33 @@ def test_invalid_url():
     response = client.post("/validate", data={"url": "http://example.com/feed.txt"})
     assert response.status_code == 400
     assert "A valid GTFS .zip URL must be provided." in response.text
+
+
+def test_get_md_intro_basic():
+    md = """# GTFS Validator Micro-service\n\nIntro text here.\n\n## Section 1\nContent 1\n"""
+    assert get_md_intro(md) == "# GTFS Validator Micro-service\n\nIntro text here."
+
+
+def test_get_md_intro_no_section():
+    md = """# GTFS Validator Micro-service\n\nJust intro, no sections."""
+    assert get_md_intro(md) == "# GTFS Validator Micro-service\n\nJust intro, no sections."
+
+
+def test_get_md_section_basic():
+    md = """# Title\n\n## Section 1\nContent 1\n\n### Subsection\nSubcontent\n\n## Section 2\nContent 2\n"""
+    result = get_md_section(md, "## Section 1")
+    assert "Content 1" in result
+    assert "### Subsection" in result
+    assert "Subcontent" in result
+    assert "## Section 2" not in result
+
+
+def test_get_md_section_end_of_file():
+    md = """# Title\n\n## Section 1\nContent 1\n"""
+    result = get_md_section(md, "## Section 1")
+    assert "Content 1" in result
+
+
+def test_get_md_section_not_found():
+    md = "# Title\n\n## Section 1\nContent 1\n"
+    assert get_md_section(md, "## Not Present") == ""

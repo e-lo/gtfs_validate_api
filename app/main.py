@@ -8,7 +8,6 @@ from fastapi import (
     File,
     Request,
     Depends,
-    status,
 )
 from fastapi.responses import JSONResponse, HTMLResponse
 from fastapi.templating import Jinja2Templates
@@ -23,7 +22,6 @@ from pathlib import Path
 from starlette.background import BackgroundTasks
 import re
 import logging
-from functools import wraps
 
 from app.rate_limit import limiter, rate_limit_exceeded_handler
 from app.auth import get_api_key, create_user_with_email, verify_email_token
@@ -49,8 +47,6 @@ templates = Jinja2Templates(directory="app/templates")
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-ADMIN_API_KEY = "supersecretadminkey"  # Replace with env/config in production
-
 # Helper: conditional decorator for rate limiting
 def conditional_rate_limit(limit_str, key_func):
     def decorator(func):
@@ -59,15 +55,41 @@ def conditional_rate_limit(limit_str, key_func):
         return limiter.limit(limit_str, key_func=key_func)(func)
     return decorator
 
+def get_md_intro(readme_md: str) -> str:
+    # Extract from # heading to the next '##' (not including subheadings)
+    pattern = r"^# .+?(?=^## |\Z)"
+    match = re.search(pattern, readme_md, re.DOTALL | re.MULTILINE)
+    if match:
+        return match.group(0).strip()
+    return ""
+
+def get_md_section(readme_md: str, heading: str) -> str:
+    pattern = re.escape(heading) + r"(.*?)(?=^## [^#]|^# |\Z)"
+    match = re.search(pattern, readme_md, re.DOTALL | re.MULTILINE)
+    if match:
+        return heading + "\n\n" + match.group(1).strip()
+    return ""
+
 @app.get("/", response_class=HTMLResponse)
 def landing(request: Request):
     client_host = getattr(request.client, "host", "unknown")
     logger.info(f"Landing page accessed from {client_host}")
     readme_path = Path(__file__).parent.parent / "README.md"
+
     try:
         readme_md = readme_path.read_text(encoding="utf-8")
         readme_md = readme_md.replace("<YOUR-GATEWAY-URL>", app_settings.BASE_URL)
-        readme_html = markdown.markdown(readme_md, extensions=["fenced_code", "tables"])
+        sections = [ get_md_intro(readme_md) ]
+        include_headings = [
+            "## Endpoint Reference",
+            "## Deployed Usage",
+            "## Licenses"
+        ]
+        for heading in include_headings:
+            sections.append(get_md_section(readme_md, heading))
+
+        combined_md = "\n\n".join(sections)
+        readme_html = markdown.markdown(combined_md, extensions=["fenced_code", "tables"])
     except Exception as e:
         readme_html = f"<p>Could not load README.md: {e}</p>"
     return templates.TemplateResponse("landing.html", {"request": request, "readme_html": readme_html})

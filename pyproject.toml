@@ -16,6 +16,7 @@ dependencies = [
     "python-dotenv",
     "python-multipart",
     "fastapi-mail",
+    "google-cloud-firestore"
 ]
 
 [project.optional-dependencies]
@@ -26,10 +27,6 @@ dev = [
     "types-requests",
     "starlette-openapi",
     "httpx",
-    "google-cloud-firestore",
-]
-cloud = [
-    "google-cloud-firestore",
 ]
 
 [tool.mypy]

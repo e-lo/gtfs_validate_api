@@ -28,9 +28,7 @@ WORKDIR /app
 COPY . .
 
 # Install dependencies based on APP_ENV
-RUN if [ "$APP_ENV" = "production" ]; then \
-      make cloud-env; \
-    elif [ "$APP_ENV" = "development" ]; then \
+RUN if [ "$APP_ENV" = "development" ]; then \
       make dev-env; \
     else \
       make venv; \

@@ -19,61 +19,50 @@
 └─ docs/               # Deployment & quota guides
 ```
 
----
-
-## 1. Project Setup
-
-1. **Clone the repository**
-2. **Create a `.env` file** with your Google Cloud project info:
-   
-   ```env
-   GCLOUD_PROJECT_ID=your-gcp-project-id
-   GCLOUD_PROJECT_NUMBER=your-gcp-project-number
-   ```
-
-3. **Install required services and set up Google Cloud resources:**
-   
-   ```sh
-   make cloud-setup
-   ```
-
-   This will enable all required Google Cloud services, set up Artifact Registry, and configure IAM roles.
-
----
-
-## 2. Local Development & Testing
-
-### a. Local Virtual Environment (hot-reload, fast iteration)
+## Local Development
 
 ```sh
-make venv         # creates .venv and installs dependencies
-make dev          # runs FastAPI with hot-reload at http://localhost:8080
+make dev-env         # creates .venv and installs dependencies
+make docker-build           # builds the Docker image
+make docker-run-dev         # runs the API at http://localhost:8080 in Docker
 ```
 
-### b. Run Tests
+### Lint + Test
 
 ```sh
+make lint         # runs Ruff and mypy
 make test         # runs all unit tests in tests/
 ```
 
-### c. Lint and Type Check
+## Google Cloud Deployment
+
+### Instantiate required g-cloud services
+
 ```sh
-make lint         # runs Ruff and mypy
+make gcloud-setup
 ```
 
----
-
-## 3. Local Deployment (Docker)
-
-Build and run the API in a container:
+### Add required production environment variables to production environment
 
 ```sh
-make docker-build      # builds the Docker image
-make docker-run        # runs the API at http://localhost:8080 in Docker
+BASE_URL
+DISABLE_EMAIL_AND_API_KEY #False
+APP_ENV #production
+GCLOUD_PROJECT_ID
+GCLOUD_PROJECT_NUMBER
+MAIL_USERNAME #from mailjet
+MAIL_PASSWORD #from mailjet
+MAIL_FROM 
+MAIL_PORT #537
+MAIL_SERVER #from mailjet
+MAIL_STARTTLS #True
+MAIL_SSL_TLS #False
+RATE_LIMIT_UNAUTH_LIMIT
+RATE_LIMIT_AUTH_LIMIT
 ```
 
-## 4. Deploy to Google Cloud
+## Deploy to Google Cloud
 
 ```sh
-make release
+make gcloud-deploy
 ```
