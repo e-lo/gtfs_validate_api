@@ -20,9 +20,27 @@ ADD https://astral.sh/uv/install.sh /uv-installer.sh
 RUN sh /uv-installer.sh && rm /uv-installer.sh
 ENV PATH="/root/.local/bin/:$PATH"
 
+# Set APP_ENV as a build argument and environment variable
+ARG APP_ENV=local
+ENV APP_ENV=${APP_ENV}
+
 WORKDIR /app
 COPY . .
 
-RUN make venv
+# Install dependencies based on APP_ENV
+RUN if [ "$APP_ENV" = "production" ]; then \
+      make cloud-env; \
+    elif [ "$APP_ENV" = "development" ]; then \
+      make dev-env; \
+    else \
+      make venv; \
+    fi
+
 ENV PYTHONUNBUFFERED=1
-CMD ["make", "dev"]
+
+# Entrypoint: run the app with the correct environment
+CMD if [ "$APP_ENV" = "production" ]; then \
+      make run-prod; \
+    else \
+      make run-dev; \
+    fi

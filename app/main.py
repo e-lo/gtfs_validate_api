@@ -1,4 +1,15 @@
-from fastapi import FastAPI, UploadFile, HTTPException, Form, Query, Response, File, Request, Depends
+from fastapi import (
+    FastAPI,
+    UploadFile,
+    HTTPException,
+    Form,
+    Query,
+    Response,
+    File,
+    Request,
+    Depends,
+    status,
+)
 from fastapi.responses import JSONResponse, HTMLResponse
 from fastapi.templating import Jinja2Templates
 from slowapi.util import get_remote_address
@@ -12,6 +23,7 @@ from pathlib import Path
 from starlette.background import BackgroundTasks
 import re
 import logging
+from functools import wraps
 
 from app.rate_limit import limiter, rate_limit_exceeded_handler
 from app.auth import get_api_key, create_user_with_email, verify_email_token
@@ -37,36 +49,62 @@ templates = Jinja2Templates(directory="app/templates")
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+ADMIN_API_KEY = "supersecretadminkey"  # Replace with env/config in production
+
+# Helper: conditional decorator for rate limiting
+def conditional_rate_limit(limit_str, key_func):
+    def decorator(func):
+        if app_settings.DISABLE_EMAIL_AND_API_KEY:
+            return func  # No-op: do not apply rate limiting
+        return limiter.limit(limit_str, key_func=key_func)(func)
+    return decorator
+
 @app.get("/", response_class=HTMLResponse)
 def landing(request: Request):
-    logger.info(f"Landing page accessed from {request.client.host}")
-    # Render README.md as HTML
+    client_host = getattr(request.client, "host", "unknown")
+    logger.info(f"Landing page accessed from {client_host}")
     readme_path = Path(__file__).parent.parent / "README.md"
     try:
         readme_md = readme_path.read_text(encoding="utf-8")
+        readme_md = readme_md.replace("<YOUR-GATEWAY-URL>", app_settings.BASE_URL)
         readme_html = markdown.markdown(readme_md, extensions=["fenced_code", "tables"])
     except Exception as e:
         readme_html = f"<p>Could not load README.md: {e}</p>"
     return templates.TemplateResponse("landing.html", {"request": request, "readme_html": readme_html})
 
+
 @app.post("/request-key")
-def request_key(request: Request, background_tasks: BackgroundTasks, email: str = Form(...)):
-    logger.info(f"API key request for email: {email} from {request.client.host}")
+def request_key(
+    request: Request, background_tasks: BackgroundTasks, email: str = Form(...)
+):
+    client_host = getattr(request.client, "host", "unknown")
+    logger.info(f"API key request for email: {email} from {client_host}")
     try:
         user = create_user_with_email(email, background_tasks)
         logger.info(f"User created or found for email: {email}")
-        return templates.TemplateResponse("landing.html", {"request": request, "readme_html": "<p>Check your email for a verification link.</p>"})
+        return templates.TemplateResponse(
+            "landing.html",
+            {
+                "request": request,
+                "readme_html": "<p>Check your email for a verification link.</p>",
+            },
+        )
     except Exception as e:
         logger.error(f"Error processing API key request for {email}: {e}")
-        return templates.TemplateResponse("landing.html", {"request": request, "readme_html": f"<p>Error: {e}</p>"})
+        return templates.TemplateResponse(
+            "landing.html", {"request": request, "readme_html": f"<p>Error: {e}</p>"}
+        )
+
 
 def run_validator(feed_path: str, work: str) -> None:
     result = subprocess.run(
         ["java", "-jar", JAR, "-i", str(feed_path), "-o", str(work)],
-        capture_output=True, text=True
+        capture_output=True,
+        text=True,
     )
     if result.returncode != 0:
         raise HTTPException(500, result.stderr)
+
 
 def get_report(work: str, format: str):
     work_path = Path(work)
@@ -88,11 +126,13 @@ def get_report(work: str, format: str):
     else:
         raise HTTPException(400, "Invalid format parameter.")
 
+
 async def save_uploaded_file(file: UploadFile, dest: str):
     if file.content_type != "application/zip":
         raise HTTPException(400, "GTFS feed must be a .zip")
     dest_path = Path(dest)
     dest_path.write_bytes(await file.read())
+
 
 async def download_file(url: str, dest: str):
     if not url.lower().endswith(".zip"):
@@ -109,26 +149,39 @@ async def download_file(url: str, dest: str):
                         break
                     out.write(chunk)
 
-def get_rate_limit(request: Request, api_key=Depends(get_api_key)):
+
+def get_rate_limit(request: Request = None):
+    if request is None or rate_limit_settings is None:
+        return "5/day"
+    api_key = request.headers.get("x-api-key")
     if api_key:
         return rate_limit_settings.AUTH_LIMIT
     else:
         return rate_limit_settings.UNAUTH_LIMIT
 
+
 @app.post("/validate")
-@limiter.limit("{rate_limit}", key_func=get_remote_address)
+@limiter.limit(lambda request=None: get_rate_limit(request), key_func=get_remote_address)
 async def validate(
     request: Request,
     file: Optional[UploadFile] = File(None),
     url: Optional[str] = Form(None),
-    format: str = Query("json", enum=["json", "html", "errors"], description="Response format: 'json' (default), 'html', or 'errors'"),
-    api_key = Depends(get_api_key),
-    rate_limit: str = Depends(get_rate_limit),
+    format: str = Query(
+        "json",
+        enum=["json", "html", "errors"],
+        description="Response format: 'json' (default), 'html', or 'errors'",
+    ),
+    api_key=Depends(get_api_key),
 ):
-    logger.info(f"/validate called from {request.client.host} with api_key={bool(api_key)}")
+    client_host = getattr(request.client, "host", "unknown")
+    logger.info(
+        f"/validate called from {client_host} with api_key={bool(api_key)}"
+    )
     try:
         if app_settings.DISABLE_EMAIL_AND_API_KEY:
-            logger.info("DISABLE_EMAIL_AND_API_KEY is set; skipping auth and rate limiting.")
+            logger.info(
+                "DISABLE_EMAIL_AND_API_KEY is set; skipping auth and rate limiting."
+            )
         if isinstance(file, str) and file == "":
             file = None
         if not file and not url:
@@ -146,7 +199,9 @@ async def validate(
             else:
                 if url is None:
                     logger.warning("No URL provided when file is None.")
-                    raise HTTPException(400, "You must provide a URL if no file is uploaded.")
+                    raise HTTPException(
+                        400, "You must provide a URL if no file is uploaded."
+                    )
                 await download_file(url, str(feed))
                 logger.info(f"Downloaded file from URL: {url}")
             run_validator(str(feed), str(work_path))
@@ -155,6 +210,7 @@ async def validate(
     except Exception as e:
         logger.error(f"Error in /validate: {e}")
         raise
+
 
 @app.get("/verify-email", response_class=HTMLResponse)
 def verify_email(request: Request, token: str):
@@ -170,6 +226,7 @@ def verify_email(request: Request, token: str):
     usage_html = ""
     try:
         readme_md = readme_path.read_text(encoding="utf-8")
+        readme_md = readme_md.replace("<YOUR-GATEWAY-URL>", app_settings.BASE_URL)
         # Extract from ## Programmatic Usage to the next ##
         usage = re.search(r"## Usage(.+?)(^## |\Z)", readme_md, re.DOTALL | re.MULTILINE)
         combined = ""
@@ -180,3 +237,20 @@ def verify_email(request: Request, token: str):
     except Exception as e:
         usage_html = f"<p>Could not load usage instructions: {e}</p>"
     return templates.TemplateResponse("verify_email.html", {"request": request, "message": msg, "api_key": api_key_value, "usage_html": usage_html})
+
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
+@app.post("/admin/delete-user")
+def admin_delete_user(email: str = Form(...)):
+    from app.firestore_db import db
+    logger.info(f"Admin deleting user: {email}")
+    try:
+        db.collection('users').document(email.lower()).delete()
+        logger.info(f"User {email} deleted by admin.")
+        return {"status": "success", "message": f"User {email} deleted."}
+    except Exception as e:
+        logger.error(f"Error deleting user {email}: {e}")
+        raise HTTPException(status_code=500, detail=f"Error deleting user: {e}")

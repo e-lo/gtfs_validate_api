@@ -4,18 +4,18 @@ version = "0.1.0"
 description = "FastAPI wrapper for MobilityData GTFS Validator"
 
 dependencies = [
+    "aiohttp",
     "fastapi",
     "uvicorn[standard]",
-    "python-multipart",
     "uv",
     "aiohttp",
-    "fastapi-mail",
     "markdown",
     "slowapi",
     "bcrypt",
     "jinja2",
     "python-dotenv",
-    "google-cloud-firestore"
+    "python-multipart",
+    "fastapi-mail",
 ]
 
 [project.optional-dependencies]
@@ -26,6 +26,10 @@ dev = [
     "types-requests",
     "starlette-openapi",
     "httpx",
+    "google-cloud-firestore",
+]
+cloud = [
+    "google-cloud-firestore",
 ]
 
 [tool.mypy]

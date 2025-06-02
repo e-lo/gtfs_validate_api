@@ -2,51 +2,45 @@
 
 > **Prerequisite:**
 > 
-> To use Docker-based development and testing, you must have [Docker Desktop](https://www.docker.com/products/docker-desktop/) installed and running on your system (available for Mac, Windows, and Linux). After installation, verify Docker is available by running `docker --version` in your terminal.
+> Docker build now downloads the GTFS Validator JAR.  To use and test locally, you must have [Docker Desktop](https://www.docker.com/products/docker-desktop/) installed and running on your system (available for Mac, Windows, and Linux). After installation, verify Docker is available by running `docker --version` in your terminal.
 >
-> **Note:** The Docker build now downloads the GTFS Validator JAR from GitHub and supports configurable Java and validator versions via build arguments.
 
 A lightweight, stateless API that wraps the official **[MobilityData GTFS Validator](https://github.com/MobilityData/gtfs-validator)** and exposes it as a single `/validate` endpoint.  
+
 Upload a GTFS `.zip` or provide a URL, receive a validation report in your chosen format.
 
 | Feature | Notes |
 |---------|-------|
-| **Serverless-ready** | Designed for Google Cloud Run (default) but runs anywhere Docker does—including Fly.io, Render, Railway or locally. |
-| **Fast cold-starts** | One-shot Java CLI lives in a slim image; typical cold-start ≤ 3 s, per-feed runtime ~50–120 s for 2 GB Bay-Area-sized feeds. |
-| **Zero persistence** | No database—perfect for pay-per-request pricing and sandbox use. |
-| **API-key & quota support** | Uses Google **API Gateway** for key issuance, per-key rate limits, and usage analytics. |
+| **Serverless-ready** | Designed for Google Cloud Run (default) but can run wherever Docker can. |
+| **Fast cold-starts** | One-shot Java CLI lives in a slim image; typical cold-start ≤ 3 s. |
+| **Zero persistence** | No database to manage (other than API keys...and those are optional). |
+| **API-key & quota support** | Optionally uses Firestore to manage users and API keys in order to impose rates based on keys. |
+| **User registration & verification** | Auto-issues API keys to emails which are verified.  Currently leverages Mailjet's free usage tier to send verification emails. |
 | **Language binding** | Pure REST (OpenAPI 3.0 spec included) → generate clients for Python, JS/TS, Go, etc. |
-| **Cost @ 100 feeds/day** | Fits inside Cloud Run's free tier (~$0) or ≈ $1 on Fly.io (scale-to-zero). |
+| **Cost @ 100 feeds/day** | Currently fits well inside Cloud Run's free tier. |
 
 ---
 
 ## Quickstart
 
-### 1. Local Development
+1. **Create the virtual environment and install dependencies:**
 
-```sh
-make venv         # create .venv and install dependencies
-make dev          # run FastAPI with hot-reload at http://localhost:8080
-```
+   ```sh
+   make venv
+   ```
 
-### 2. Local Docker Usage
+2. **Run FastAPI locally (no user authentication):**
 
-```sh
-make docker-build      # builds the Docker image
-make docker-run        # runs the API at http://localhost:8080 in Docker
-```
-
-### 3. Run Tests
-
-```sh
-make test
-```
+   ```sh
+   make docker-run-localprod
+   # App will be available at http://localhost:8080
+   ```
 
 ---
 
 ## Environment Variables
 
-The application uses the following environment variables for configuration. You can use `.env`, `.env.development`, or `.env.production` files depending on your environment. **Never commit real secrets to version control.**
+The application uses the following environment variables for configuration. You can use `.env.local`, `.env.development`, or `.env.production` files depending on your environment. **Never commit real secrets to version control.**
 
 | Name           | Description                        | Example/Notes                |
 |----------------|------------------------------------|------------------------------|
@@ -67,8 +61,8 @@ The application uses the following environment variables for configuration. You 
 
 | Environment         | .env file         | Email/API Key Required? | Notes                        |
 |---------------------|-------------------|------------------------|------------------------------|
-| Local dev/testing   | .env/.env.development | No                     | Dummy or test SMTP           |
-| Local production    | .env              | No (set DISABLE_EMAIL_AND_API_KEY=True) | Bypasses email/API key checks |
+| Local dev/testing   | .env.development  | No                     | Dummy or test SMTP           |
+| Local production    | .env.local        | No (set DISABLE_EMAIL_AND_API_KEY=True) | Bypasses email/API key checks |
 | Cloud production    | .env.production   | Yes                    | Use real secrets             |
 
 > For local production/testing, set `DISABLE_EMAIL_AND_API_KEY=True` in your `.env` to bypass email verification and API key checks.
@@ -220,3 +214,65 @@ See full schema in `openapi.yaml` (auto-generated or fetched from the deployed s
 ## License
 
 MIT License
+
+## Administrative Endpoints
+
+### Delete User (Admin)
+
+**Endpoint:** `POST /admin/delete-user`
+
+Deletes a user from Firestore by email. In production, access is controlled by Firestore authentication and IAM permissions. In the emulator, all requests are allowed.
+
+**Request fields:**
+- `email` (form field, required): The email address of the user to delete.
+
+**Example usage with curl:**
+
+```
+curl -X POST -F "email=user@example.com" http://localhost:8080/admin/delete-user
+```
+
+**Note:**
+- In production, only callers with valid Firestore credentials and permissions can use this endpoint.
+- In the emulator, any client can call this endpoint.
+
+## Rate Limiting
+
+- **Authenticated users (with API key):** Higher rate limits (default: 50/day, configurable via environment).
+- **Unauthenticated users:** Lower rate limits (default: 5/day, configurable via environment).
+- **Disabling Rate Limiting:** If `DISABLE_EMAIL_AND_API_KEY=True` in your environment, all rate limiting and API key checks are disabled for local development/testing.
+
+The rate limit is determined dynamically per request. See the `RateLimitSettings` in your environment variables for configuration.
+
+> **Note:** The `/validate` endpoint enforces different rate limits for requests with and without an API key. If you exceed your quota, you'll receive a `429 Too Many Requests` error.
+
+---
+
+## Environment Variables (Rate Limiting)
+
+| Name                | Description                        | Example/Notes                |
+|---------------------|------------------------------------|------------------------------|
+| AUTH_LIMIT          | Rate limit for authenticated users | 50/day                       |
+| UNAUTH_LIMIT        | Rate limit for unauthenticated     | 5/day                        |
+
+---
+
+## OpenAPI/Swagger UI
+
+The OpenAPI docs at `/docs` always reflect the current environment and rate limiting logic.
+
+---
+
+## Testing and Local Development
+
+All tests pass and the dynamic rate limiting logic is covered by the test suite. You can run tests with:
+
+```sh
+pytest --maxfail=5 --disable-warnings -v
+```
+
+---
+
+## Advanced: Dynamic Rate Limiting Implementation
+
+This project uses a dynamic rate limiting approach based on user authentication, as discussed in [slowapi issue #13](https://github.com/laurentS/slowapi/issues/13). The rate limit is determined per request using a lambda and an optional request argument.
