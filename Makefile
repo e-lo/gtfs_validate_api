@@ -177,6 +177,7 @@ gcloud-build: cloudbuild.yaml ## Build & push image with Cloud Build → Artifac
 		--config cloudbuild.yaml \
 		--project=$(PROJECT) \
 		--substitutions _REPO=$(REPO),_SERVICE=$(SERVICE),_SHORT_SHA=$(SHORT_SHA)
+		--build-arg APP_ENV=production
 
 deploy-service: update-cloudrun-secrets gcloud-build ## Deploy to Cloud Run, tag :latest
 	@echo "Deploying $(SERVICE) to Cloud Run from image $(REPO)/$(SERVICE):$(SHORT_SHA)"
@@ -197,8 +198,6 @@ deploy-service: update-cloudrun-secrets gcloud-build ## Deploy to Cloud Run, tag
 # -------------- Full Deployment Orchestration --------------------------------
 release: deploy-service
 	@echo "✅ Full release process complete!"
-	@echo "API Gateway URL: https://$(shell gcloud api-gateway gateways describe $(GATEWAY_ID) --location=$(REGION) --project=$(PROJECT) --format='value(defaultHostname)')"
-	@echo "Remember to create and restrict API keys as needed using 'make key-create' or the console."
 
 # --- Google Cloud Secret Manager integration ---
 # Usage:
